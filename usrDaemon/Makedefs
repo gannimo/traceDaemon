@@ -1,0 +1,15 @@
+# flags for all compiled code
+CFLAGS = -O3 -ggdb -Wall -Wextra -DDEBUG
+
+# flags for position independent code in object files
+LIBFLAGS=-fpic -c
+
+LIBNAME=tracestate
+LIBVERS=0
+LIBMIN=1
+LIBDIR=../lib
+
+CC=gcc
+
+FILES=td_filestate.c avl.c
+
