@@ -48,9 +48,22 @@ struct avl_node {
  * @data pointer to data
  * @cmp function that takes two data pointer and returns a strict ordering
  *      comparing left and right.
- * @return the avl node that was just created.
+ * @return the new root.
  */
 struct avl_node* avl_insert(struct avl_node *root, void *data, long(*cmp)(void*, void*));
+
+    
+/**
+ * Deletes an element from the avl tree.
+ * This function deletes data from the AVL tree. As a helper we have to pass a
+ * cmp compare function.
+ * @param root Root of the AVL tree
+ * @data pointer to data
+ * @cmp function that takes two data pointer and returns a strict ordering
+ *      comparing left and right.
+ * @return the new root.
+ */
+struct avl_node* avl_delete(struct avl_node *root, void *data, long(*cmp)(void*, void*));
 
 /**
  * Searches the given AVL tree for given data.

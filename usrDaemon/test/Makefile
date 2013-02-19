@@ -31,7 +31,7 @@ all: runtest
 
 build: gtest_main.a $(OBJECTS)
 	$(CC) $(CFLAGS) -I$(INCLUDEDIR) -I$(GTEST_DIR)/include -lpthread \
-		*.cc ../*.o gtest_main.a -o test
+		*.o ../*.o gtest_main.a -o test
 
 %.o: %.cc
 	$(CC) $(CFLAGS) -I$(INCLUDEDIR) -I$(GTEST_DIR)/include -c $< -o $@
