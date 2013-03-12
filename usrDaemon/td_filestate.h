@@ -107,7 +107,15 @@ long process_destroy(unsigned long tid);
  * @return returns a pointer to the td_thread struct or NULL
  */
 struct td_thread* find_process(unsigned long tid);
-    
+
+/**
+ * Handle a system call that is fired from the external side.
+ * @param tid Thread ID that executes the current system call.
+ * @param syscall Syscall number (as specified in syscall_nr.h)
+ * @param file Current file atom
+ * @param path Path of the file (might be kicked?)
+ * @param buf Result of the kernel-side stat system call (includes verified meta data)
+ */
 enum td_syscall_result handle_syscall(unsigned long tid, unsigned long syscall,
                                       const char *file, const char *path,
                                       struct stat *buf);
