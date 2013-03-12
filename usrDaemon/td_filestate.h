@@ -50,7 +50,6 @@ struct td_file {
   char name[MAX_FILE_LEN];  /*< filename */
   struct stat stat;  /*< stat of the file */
   struct td_file *dir;  /*< descriptor of the dir */
-  struct td_file *next;
 };
 
 
@@ -59,18 +58,48 @@ struct td_thread {
     unsigned long tid;
     unsigned long ppid;
     struct td_thread *next_thread;
-    struct td_thread *next_proc_l;
-    struct td_thread *next_proc_r;
-    struct td_file *files;
+    struct avl_node *files;
 };
 
-/** creates the data structures for a new process.
- *  This function creates all the necessary data structures for
- *  a new process.
+enum td_syscall_result {
+    SYSCALL_PIDERR, /*< we have no information about the given PID */
+    SYSCALL_PASS
+};
+
+enum transition {
+    TRANS_NEW,  /*< file is touched the 1st time */
+    TRANS_TEST, /*< file is checked */
+    TRANS_USE, /*< file is used */
+    TRANS_CLOSE /*< file is no longer used */
+};
+
+/**
+ * This function creates all the necessary data structures for
+ * a new process.
+ * @param pid the process id of the new process
+ * @param tid the thread id of the new process
+ * @param ppid the process id of the parent
  **/
 struct td_thread* process_create(unsigned long pid, unsigned long tid, unsigned long ppid);
 
-void handle_syscall(struct td_thread *process, unsigned long syscall, char *file, char *path);
+/**
+ * Destroys an existing process, deletes the process from the
+ * global AVL tree and frees all resources.
+ * @param tid the tid that is deleted
+ * @return 0 on successful deletion or an error code.
+ **/
+long process_destroy(unsigned long tid);
+
+/**
+ * Locates the process in the global process list and returns the associated
+ * td_thread struct.
+ * @param tid is the thread ID of the process
+ * @return returns a pointer to the td_thread struct or NULL
+ */
+struct td_thread* find_process(unsigned long tid);
+    
+enum td_syscall_result handle_syscall(unsigned long tid, unsigned long syscall,
+                                      char *file, char *path, struct stat *buf);
 
 #ifdef __cplusplus
 }

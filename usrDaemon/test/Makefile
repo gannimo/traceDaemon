@@ -39,6 +39,9 @@ build: gtest_main.a $(OBJECTS)
 runtest: build
 	./test
 
+runval: build
+	valgrind --trace-children=yes --leak-check=full ./test
+
 clean:
 	rm -f *.o test *.as *.out gtest_main.c *~
 
