@@ -36,38 +36,48 @@ extern "C" {
 enum td_file_state {
   STATE_UPDATE,  /*< file has already been checked (e.g., access'ed) */
   STATE_ENFORCE,  /*< file has been opened using checked data */
-  STATE_CLOSE,  /*< file has been closed. might be stale data */
-  STATE_NEW,  /*< new, unseen file */
+  STATE_RETIRE,  /*< file has been closed. might be stale data */
   STATE_DIR_OK,  /*< directory is OK and verified */
   STATE_DIR_ERR  /*< directory state is erroneous */
 };
 
+enum td_file_health {
+    HEALTH_OK = 1, /*< no race possible */
+    HEALTH_UNCHECKED = 2, /*< this file was used once without checking */
+    HEALTH_BAD = 3 /*< race possible */
+};
+
 /* this struct represents a single file of a thread */
 struct td_file {
-  enum td_file_state state;  /*< state of the file */
+  enum td_file_state state;  /*< state of the file (in the state machine) */
+  enum td_file_health health;  /*< state of the file */
   long nropen; /*< how many times opened in app */
   long fderr;  /*< if !=0 error code (e.g., for illegal files) */
-  char name[MAX_FILE_LEN];  /*< filename */
+  char name[MAX_FILE_LEN+1];  /*< filename */
   struct stat stat;  /*< stat of the file */
   struct td_file *dir;  /*< descriptor of the dir */
 };
 
+struct td_files {
+    struct avl_node *tree;
+};
 
 struct td_thread {
     unsigned long pid;
     unsigned long tid;
     unsigned long ppid;
     struct td_thread *next_thread;
-    struct avl_node *files;
+    struct td_files *files; /*< all files; shared among all threads */
 };
 
 enum td_syscall_result {
     SYSCALL_PIDERR, /*< we have no information about the given PID */
-    SYSCALL_PASS
+    SYSCALL_RACE, /*< race condition detected */
+    SYSCALL_UNCHECKED, /*< possible program error (unchecked file usage) */
+    SYSCALL_PASS /*< all is fine */
 };
 
 enum transition {
-    TRANS_NEW,  /*< file is touched the 1st time */
     TRANS_TEST, /*< file is checked */
     TRANS_USE, /*< file is used */
     TRANS_CLOSE /*< file is no longer used */
@@ -99,7 +109,8 @@ long process_destroy(unsigned long tid);
 struct td_thread* find_process(unsigned long tid);
     
 enum td_syscall_result handle_syscall(unsigned long tid, unsigned long syscall,
-                                      char *file, char *path, struct stat *buf);
+                                      const char *file, const char *path,
+                                      struct stat *buf);
 
 #ifdef __cplusplus
 }

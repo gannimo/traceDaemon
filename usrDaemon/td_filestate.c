@@ -30,7 +30,7 @@
 #include <string.h>
 
 #include "avl.h"
-//#include "syscall_nr.h"
+#include "syscall_nr.h"
 
 struct avl_node *root_proc_tid = NULL;
 struct avl_node *root_proc_pid = NULL;
@@ -80,11 +80,22 @@ struct td_thread* process_create(unsigned long pid, unsigned long tid,
     if (proc != NULL) {
         npid->next_thread = proc->next_thread;
         proc->next_thread = npid;
+        npid->files = proc->files;
     } else {
         root_proc_pid = avl_insert(root_proc_pid, npid, compare_proc_pid);
+        if ((npid->files = (struct td_files*)malloc(sizeof(struct td_files))) == NULL) {
+            puts("td_filestate.c: Unable to allocate memory\n");
+            abort();
+        }
+        npid->files->tree = NULL;
     }
     root_proc_tid = avl_insert(root_proc_tid, npid, compare_proc_tid);
     return npid;
+}
+
+static void destroy_file_data(void *tdfile) {
+    struct td_file *file = (struct td_file*)tdfile;
+    free(file);
 }
 
 long process_destroy(unsigned long tid) {
@@ -103,8 +114,9 @@ long process_destroy(unsigned long tid) {
         if (pid == proc) {
             struct td_thread *first = pid->next_thread;
             root_proc_pid = avl_delete(root_proc_pid, (void*)pid, compare_proc_pid); 
-            if (first != NULL)
+            if (first != NULL) {
                 root_proc_pid = avl_insert(root_proc_pid, (void*)first, compare_proc_pid);
+            }
         } else {
             // delete from list
             struct td_thread *tr = pid;
@@ -117,7 +129,10 @@ long process_destroy(unsigned long tid) {
             }
         }
     } else {
+        // last process in thread group, we have to kill all files
         root_proc_pid = avl_delete(root_proc_pid, (void*)proc, compare_proc_pid); 
+        avl_destroy(proc->files->tree, destroy_file_data);
+        free(proc->files);
     }
     
     // free this process
@@ -126,11 +141,13 @@ long process_destroy(unsigned long tid) {
 }
 
 
-struct td_file *check_file(struct td_thread *proc, char *file, char *path,
-                              struct stat *buf, enum transition next_state);
+struct td_file *check_file(struct td_thread *proc, const char *file,
+                           const char *path, struct stat *buf,
+                           enum transition next_state);
 
 enum td_syscall_result handle_syscall(unsigned long tid, unsigned long syscall,
-                                      char *file, char *path, struct stat *buf) {
+                                      const char *file, const char *path,
+                                      struct stat *buf) {
     struct td_thread *proc = find_process(tid);
     if (proc == NULL) {
         printf("Could not find pid %ld (unable to handle system call %ld)\n",
@@ -140,11 +157,33 @@ enum td_syscall_result handle_syscall(unsigned long tid, unsigned long syscall,
 
     struct td_file *rc = NULL;
     switch (syscall) {
-        SYS_ACCESS: rc = check_file(proc, file, path, buf, TRANS_TEST); break;
-        SYS_STAT: rc = check_file(proc, file, path, buf, TRANS_TEST); break;
-        SYS_CREAT: rc = check_file(proc, file, path, buf, TRANS_USE); rc->nropen++; break;
-        SYS_OPEN: rc = check_file(proc, file, path, buf, TRANS_USE); rc->nropen++; break;
-        SYS_CLOSE: rc = check_file(proc, file, path, buf, TRANS_CLOSE); break;        
+        case SYS_ACCESS:
+            rc = check_file(proc, file, path, buf, TRANS_TEST);
+            break;
+        case SYS_STAT:
+            rc = check_file(proc, file, path, buf, TRANS_TEST);
+            break;
+        case SYS_CREAT:
+            rc = check_file(proc, file, path, buf, TRANS_USE);
+            rc->nropen++;
+            break;
+        case SYS_OPEN:
+            rc = check_file(proc, file, path, buf, TRANS_USE);
+            rc->nropen++;
+            break;
+        case SYS_CLOSE:
+            rc = check_file(proc, file, path, buf, TRANS_CLOSE);
+            break;
+    }
+    switch (rc->health) {
+        case HEALTH_UNCHECKED:
+            printf("Possible race condition: %s %s\n", file, path);
+            return SYSCALL_UNCHECKED;
+        case HEALTH_OK:
+            return SYSCALL_PASS;
+        case HEALTH_BAD:
+            printf("Race condition: %s %s\n", file, path);
+            return SYSCALL_RACE;
     }
     return SYSCALL_PASS;
 }
@@ -153,24 +192,43 @@ static long compare_file(void *left, void *right) {
     struct td_file *trl, *trr;
     trl = (struct td_file*)left;
     trr = (struct td_file*)right;
-    return strncmp((const char*)&(trl->name), (const char*)&(trr->name), MAX_FILE_LEN);
+    return strncmp(trl->name, trr->name, MAX_FILE_LEN);
 }
 
-struct td_file *check_file(struct td_thread *proc, char *file, char *path,
-                              struct stat *buf, enum transition next_state) {
-    struct td_file loc, *lfile;
-    strncpy((char*)&(loc.name), file, MAX_FILE_LEN);
+static inline long same_file_notime(struct stat *stat1, struct stat *stat2) {
+  /* if inode, device, permissions, and user/group information are the same
+     then the file is the same as well */
+  return (stat1->st_dev == stat2->st_dev && stat1->st_ino == stat2->st_ino &&
+          stat1->st_mode == stat2->st_mode && stat1->st_uid == stat2->st_uid &&
+          stat1->st_gid == stat2->st_gid);
+}
 
-    lfile = (struct td_file*)avl_find(proc->files, (void*)(&loc), compare_file);
+static inline void update_health(struct td_file *file,
+                                 enum td_file_health health) {
+    /* only update file health if same or worse state */
+    /* the race condition sticks */
+    if (file->health < health)
+        file->health = health;
+}
+    
+struct td_file *check_file(struct td_thread *proc, const char *file,
+                           const char *path, struct stat *buf,
+                           enum transition next_state) {
+    struct td_file loc, *lfile = NULL;
+    struct avl_node *node;
+    strncpy(loc.name, file, MAX_FILE_LEN);
+    /* TODO: do the actual file/path check (according to the paper by Dan Tsafrir */
+    node = avl_find(proc->files->tree, (void*)(&loc), compare_file);
 
-    /* we have not seen this file */
-    if (lfile == NULL) {
+    /* we have not seen this file (status: new) */
+    if (node == NULL) {
         if ((lfile = (struct td_file*)malloc(sizeof(struct td_file))) == NULL) {
             puts("td_filestate.c: Unable to allocate memory\n");
             abort();
         }
-        strncpy((char*)&(lfile->name), file, MAX_FILE_LEN);
-        if (strnlen((const char*)&(lfile->name), MAX_FILE_LEN) == MAX_FILE_LEN) {
+        strncpy(lfile->name, file, MAX_FILE_LEN);
+        lfile->name[MAX_FILE_LEN] = 0;
+        if (strlen(lfile->name) == MAX_FILE_LEN) {
             printf("td_filestate.c: Input file name too long: '%s'\n", file);
             abort();
         }
@@ -178,13 +236,95 @@ struct td_file *check_file(struct td_thread *proc, char *file, char *path,
         lfile->fderr = 0;
         memcpy(&(lfile->stat), buf, sizeof(struct stat));
         lfile->state = next_state;
-
+        switch (next_state) {
+            case TRANS_TEST:
+                lfile->health = HEALTH_OK;
+                break;
+            case TRANS_USE:
+            case TRANS_CLOSE:
+                lfile->health = HEALTH_UNCHECKED;
+                break;
+        }
+        proc->files->tree = avl_insert(proc->files->tree, lfile, compare_file);
         return lfile;
+    } else {
+        // we have found the file in the process cache
+        lfile = (struct td_file*)(node->data);
     }
 
     /* check existing file according to buf and state */
     switch (lfile->state) {
-        
+        case STATE_UPDATE:
+            switch (next_state) {
+                case TRANS_TEST: /* update */
+                    memcpy(&(lfile->stat), buf, sizeof(struct stat));
+                    update_health(lfile, HEALTH_OK);
+                    lfile->state = STATE_UPDATE;
+                    break;
+                case TRANS_USE: /* enforce */
+                    if (!same_file_notime(&(lfile->stat), buf)) {
+                        update_health(lfile, HEALTH_BAD);
+                    } else {
+                        update_health(lfile, HEALTH_OK);
+                    }
+                    lfile->state = STATE_ENFORCE;
+                    break;
+                case TRANS_CLOSE: /* enforce */
+                    if (!same_file_notime(&(lfile->stat), buf)) {
+                        update_health(lfile, HEALTH_BAD);
+                    } else {
+                        update_health(lfile, HEALTH_OK);
+                    }
+                    lfile->state = STATE_RETIRE;
+                    break;
+            }
+            break;
+        case STATE_ENFORCE:
+            switch (next_state) {
+                case TRANS_TEST: /* update */
+                case TRANS_USE: /* enforce */
+                    if (!same_file_notime(&(lfile->stat), buf)) {
+                        update_health(lfile, HEALTH_BAD);
+                    } else {
+                        update_health(lfile, HEALTH_OK);
+                    }
+                    lfile->state = STATE_ENFORCE;
+                    break;
+                case TRANS_CLOSE: /* enforce */
+                    if (!same_file_notime(&(lfile->stat), buf)) {
+                        update_health(lfile, HEALTH_BAD);
+                    } else {
+                        update_health(lfile, HEALTH_OK);
+                    }
+                    lfile->state = STATE_RETIRE;
+                    break;
+            }
+            break;
+        case STATE_RETIRE:
+            switch (next_state) {
+                case TRANS_TEST: /* update */
+                    memcpy(&(lfile->stat), buf, sizeof(struct stat));
+                    update_health(lfile, HEALTH_OK);
+                    lfile->state = STATE_UPDATE;
+                    break;
+                case TRANS_USE: /* enforce */
+                    if (!same_file_notime(&(lfile->stat), buf)) {
+                        update_health(lfile, HEALTH_BAD);
+                    } else {
+                        update_health(lfile, HEALTH_OK);
+                    }
+                    lfile->state = STATE_ENFORCE;
+                    break;
+                case TRANS_CLOSE: /* update */
+                    memcpy(&(lfile->stat), buf, sizeof(struct stat));
+                    update_health(lfile, HEALTH_OK);
+                    lfile->state = STATE_RETIRE;
+                    break;
+            }
+            break;
+        default:
+            puts("Unhandled state encountered.\n");
+            abort();
     }
     return lfile;
 }

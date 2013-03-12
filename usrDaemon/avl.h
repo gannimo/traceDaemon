@@ -74,6 +74,13 @@ struct avl_node* avl_delete(struct avl_node *root, void *data, long(*cmp)(void*,
  */
 struct avl_node* avl_find(struct avl_node *node, void *data, long(*cmp)(void*, void*));
 
+/**
+ * This function destroys the given AVL tree (inorder) and executes dest for
+ * each element.
+ * @param dest function that is executed for each data element.
+ */
+void avl_destroy(struct avl_node *node, void (*dest)(void *));
+
 #ifdef __cplusplus
 }
 #endif

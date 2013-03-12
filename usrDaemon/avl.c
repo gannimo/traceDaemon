@@ -150,3 +150,11 @@ struct avl_node* avl_find(struct avl_node *node, void *data,
     if (val > 0) return avl_find(node->right, data, cmp);
     return node;
 }
+
+void avl_destroy(struct avl_node *node, void (*dest)(void *)) {
+    if (node == NULL) return;
+    avl_destroy(node->left, dest);
+    avl_destroy(node->right, dest);
+    dest(node->data);
+    free(node);
+}
